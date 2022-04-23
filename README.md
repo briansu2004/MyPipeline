@@ -206,3 +206,131 @@ requirements.txt
 Flask==2.1.1
 pytest==7.1.1
 ```
+
+### Deploy another Python app (connect to a Oracle DB) to GKE
+
+oracle-connectivity-test.py
+
+```
+import cx_Oracle
+
+try:
+    cx_Oracle.init_oracle_client()
+    conn = cx_Oracle.connect("username/password@//server:port/service")
+    cur = conn.cursor()
+    cur.execute("SELECT 'Oracle connected!' FROM dual")
+    res = cur.fetchall()
+    print(res)
+except Exception as err:
+    print("Error connecting: cx_Oracle.init_oracle_client()")
+    print(err)
+```
+
+Dockerfile
+
+```
+
+# Use the official lightweight Python image.
+# https://hub.docker.com/_/python
+FROM python:3.10-slim
+
+# Allow statements and log messages to immediately appear in the Knative logs
+ENV PYTHONUNBUFFERED True
+
+# Copy local code to the container image.
+#ENV APP_HOME /app
+#WORKDIR $APP_HOME
+#COPY . ./
+WORKDIR /app
+COPY ./Folder1/Folder2/oracle-connectivity-test.py /app
+
+RUN ls -l /app
+
+# Install production dependencies.
+#RUN sudo yum install libaio
+#RUN sudo yum install oracle-instantclient-basic-21.1.0.0.0-1.x86_64.rpm
+#RUN pip install cx-Oracle
+
+RUN apt-get update && apt-get install -y libaio1 wget unzip
+
+WORKDIR /opt/oracle
+RUN wget https://download.oracle.com/otn_software/linux/instantclient/instantclient-basiclite-linuxx64.zip && \
+    unzip instantclient-basiclite-linuxx64.zip && rm -f instantclient-basiclite-linuxx64.zip && \
+    cd /opt/oracle/instantclient* && rm -f *jdbc* *occi* *mysql* *README *jar uidrvci genezi adrci && \
+    echo /opt/oracle/instantclient* > /etc/ld.so.conf.d/oracle-instantclient.conf && ldconfig
+RUN python -m pip install cx_Oracle
+
+# Run the app.
+CMD [ "python", "/app/oracle-connectivity-test.py" ]
+```
+
+cloudbuild.yaml
+
+```
+# [START cloudbuild.yaml]
+steps:
+  # # [START cloudbuild_python_dependencies_yaml]
+  # # Install dependencies
+  # - name: python
+  #   entrypoint: pip
+  #   args: ["install", "-r", "requirements.txt", "--user"]
+  # # [END cloudbuild_python_dependencies_yaml]
+
+  # # [START cloudbuild_python_tests_yaml]
+  # # Run unit tests
+  # - name: python
+  #   entrypoint: python
+  #   args: ["-m", "pytest", "--junitxml=${SHORT_SHA}_test_log.xml"]
+  # # [END cloudbuild_python_tests_yaml]
+
+  # [START cloudbuild_python_image_yaml]
+  # - name: 'ubuntu'
+  #   args: [ "ls", "-l" ]
+
+  # - name: 'ubuntu'
+  #   args: [ "ls", "-l", "/" ]
+
+  # - name: 'ubuntu'
+  #   args: [ "ls", "-l", "/workspace" ]
+
+  # Docker Build
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build',
+           '--file', '/workspace/folder1/folder2/mydockerfile',
+           '-t', 'us-central1-docker.pkg.dev/${PROJECT_ID}/${_ARTIFACT_REGISTRY_REPO}/oracle-connectivity-test:${SHORT_SHA}',
+           '.']
+  # [END cloudbuild_python_image_yaml]
+
+  # [START cloudbuild_python_push_yaml]
+  # Docker push to Google Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push',  'us-central1-docker.pkg.dev/${PROJECT_ID}/${_ARTIFACT_REGISTRY_REPO}/oracle-connectivity-test:${SHORT_SHA}']
+  # [END cloudbuild_python_push_yaml]
+
+  # [START cloudbuild_python_deploy_yaml]
+  # Deploy to Cloud Run
+  - name: google/cloud-sdk
+    args: ['gcloud', 'run', 'deploy', 'oracle-connectivity-test-${SHORT_SHA}',
+           '--image=us-central1-docker.pkg.dev/${PROJECT_ID}/${_ARTIFACT_REGISTRY_REPO}/oracle-connectivity-test:${SHORT_SHA}',
+           '--region', 'us-central1', '--platform', 'managed',
+           '--allow-unauthenticated']
+  # [END cloudbuild_python_deploy_yaml]
+
+# # [START cloudbuild_python_logs_yaml]
+# # Save test logs to Google Cloud Storage
+# artifacts:
+#   objects:
+#     location: gs://${_BUCKET_NAME}/
+#     paths:
+#       - ${SHORT_SHA}_test_log.xml
+# # [END cloudbuild_python_logs_yaml]
+
+# Store images in Google Artifact Registry
+images:
+  - us-central1-docker.pkg.dev/${PROJECT_ID}/${_ARTIFACT_REGISTRY_REPO}/oracle-connectivity-test:${SHORT_SHA}
+
+substitutions:
+  _ARTIFACT_REGISTRY_REPO: cloud-run-source-deploy
+  _BUCKET_NAME: mybucket
+# [END cloudbuild.yaml]
+```
